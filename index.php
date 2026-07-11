@@ -1,38 +1,47 @@
 <?php
-// 1. Composer kütüphanelerini dahil ediyoruz
+// ==========================================
+// 1. ARKA PLAN (PHP) KODLARI
+// ==========================================
 require 'vendor/autoload.php';
 
-use Endroid\QrCode\QrCode;
-use Endroid\QrCode\Encoding\Encoding;
-use Endroid\QrCode\ErrorCorrectionLevel;
-use Endroid\QrCode\Color\Color;
-use Endroid\QrCode\Writer\PngWriter;
-use Endroid\QrCode\Writer\SvgWriter;
+use Endroid\QrCode\QrCode; // qr ana hat yapısıdır 
+use Endroid\QrCode\Encoding\Encoding;// metnin karakter kodlmasını belirler
+use Endroid\QrCode\ErrorCorrectionLevel; // qr hata düzeltme olması için 
+use Endroid\QrCode\Color\Color;// qr renkleri için 
+use Endroid\QrCode\Writer\PngWriter;// qr png formatında çıktı alabilmek için
+use Endroid\QrCode\Writer\SvgWriter;//
 
-// Arka planda indirme işlemi veya API önizleme isteği tetiklendiğinde:
 if (isset($_REQUEST['action'])) {
     $link = !empty($_REQUEST['link']) ? $_REQUEST['link'] : 'https://github.com';
     $format = isset($_REQUEST['format']) ? $_REQUEST['format'] : 'png';
     $qrColorHex = isset($_REQUEST['qr_color']) ? $_REQUEST['qr_color'] : '#000000';
     $bgColorHex = isset($_REQUEST['bg_color']) ? $_REQUEST['bg_color'] : '#ffffff';
-    $size = isset($_REQUEST['size']) ? (int)$_REQUEST['size'] : 300;
+    
+    // Kullanıcının girdiği milimetrik boyutları alıyoruz (Boşsa varsayılan 200mm yapıyoruz)
+    $pdf_width = !empty($_REQUEST['pdf_width']) ? (int)$_REQUEST['pdf_width'] : 200;
+    $pdf_height = !empty($_REQUEST['pdf_height']) ? (int)$_REQUEST['pdf_height'] : 200;
 
-    // Hex renklerini RGB'ye çeviriyoruz
+
+    // pdf için çözünürlük ayarlamak için 
+    if ($_REQUEST['action'] === 'download' && $format === 'pdf') {
+        $size = 1200; // PDF kalitesi için yüksek çözünürlük sabit kalıyor
+    } else {
+        $size = isset($_REQUEST['size']) ? (int)$_REQUEST['size'] : 300;
+    }
+
     list($r, $g, $b) = sscanf($qrColorHex, "#%02x%02x%02x");
     list($bg_r, $bg_g, $bg_b) = sscanf($bgColorHex, "#%02x%02x%02x");
 
-    // QR Kodu ayarları
     $qrCode = new QrCode(
         data: $link,
         encoding: new Encoding('UTF-8'),
-        errorCorrectionLevel: ErrorCorrectionLevel::High,
+        errorCorrectionLevel: ErrorCorrectionLevel::Low,
         size: $size,
-        margin: 15,
+        margin: 0,
         foregroundColor: new Color($r, $g, $b),
         backgroundColor: new Color($bg_r, $bg_g, $bg_b)
     );
 
-    // CANLI ÖNİZLEME İSTEĞİ (JavaScript burayı çağırır)
     if ($_REQUEST['action'] === 'preview') {
         $writer = new PngWriter();
         $result = $writer->write($qrCode);
@@ -41,13 +50,12 @@ if (isset($_REQUEST['action'])) {
         exit;
     }
 
-    // DOSYA İNDİRME İSTEKLERİ
     if ($_REQUEST['action'] === 'download') {
         if ($format === 'png') {
             $writer = new PngWriter();
             $result = $writer->write($qrCode);
             header('Content-Type: image/png');
-            header('Content-Disposition: attachment; filename="qrcode.png"');
+            header('Content-Disposition: attachment; filename="qrcode_'.time().'.png"');
             echo $result->getString();
             exit;
         } 
@@ -55,7 +63,7 @@ if (isset($_REQUEST['action'])) {
             $writer = new SvgWriter();
             $result = $writer->write($qrCode);
             header('Content-Type: image/svg+xml');
-            header('Content-Disposition: attachment; filename="qrcode.svg"');
+            header('Content-Disposition: attachment; filename="qrcode_'.time().'.svg"');
             echo $result->getString();
             exit;
         } 
@@ -66,16 +74,33 @@ if (isset($_REQUEST['action'])) {
             $tempFile = tempnam(sys_get_temp_dir(), 'qr_');
             file_put_contents($tempFile, $result->getString());
 
-            $pdf = new \FPDF();
+            // TARAYICI CACHE (HAFIZA) ENGELLEME BAŞLIKLARI
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+            header('Cache-Control: post-check=0, pre-check=0', false);
+            header('Pragma: no-cache');
+
+            // Sayfa boyutunu kullanıcının girdiği değerlere (mm) göre ayarlıyoruz
+            $pdf = new \FPDF('P', 'mm', array($pdf_width, $pdf_height));
+            $pdf->SetAutoPageBreak(false);
+            $pdf->SetMargins(0, 0, 0);
             $pdf->AddPage();
-            $pdf->SetFont('Arial', 'B', 16);
-            $pdf->Cell(0, 10, 'Tasarlanmis QR Kod', 0, 1, 'C');
-            $pdf->Ln(20);
-            $pdf->Image($tempFile, 55, 40, 100, 100, 'PNG');
+            
+            // Kare formu bozmamak için girilen boyutların en küçüğünü temel alıp QR boyutunu belirliyoruz
+            $min_side = min($pdf_width, $pdf_height);
+            $qr_display_size = $min_side - 30; // Kenarlardan dengeli boşluk kalması için -30 yaptık
+            
+            // DÜZENLEME: Hem X hem Y ekseninde tam matematiksel ortalamayı kuruyoruz
+            $x_pos = ($pdf_width - $qr_display_size) / 2;
+            $y_pos = ($pdf_height - $qr_display_size) / 2; // Artık altında yazı olmayacağı için tam merkezde!
+            
+            // QR Kodu basıyoruz
+            $pdf->Image($tempFile, $x_pos, $y_pos, $qr_display_size, $qr_display_size, 'PNG');
+            
+            // Altındaki FPDF font, renk ve cell (yazı) komutlarını tamamen uçurduk!
             
             header('Content-Type: application/pdf');
-            header('Content-Disposition: attachment; filename="qrcode.pdf"');
-            $pdf->Output('I', 'qrcode.pdf');
+            header('Content-Disposition: inline; filename="qrcode_'.time().'.pdf"');
+            $pdf->Output('I', 'qrcode_'.time().'.pdf');
             unlink($tempFile);
             exit;
         }
@@ -99,7 +124,6 @@ if (isset($_REQUEST['action'])) {
             align-items: center;
             min-height: 100vh;
         }
-        /* İki Bölmeli Ana Panel Kutusu */
         .app-workspace {
             display: flex;
             background-color: #ffffff;
@@ -110,7 +134,6 @@ if (isset($_REQUEST['action'])) {
             box-shadow: 0 15px 35px rgba(0,0,0,0.08);
             overflow: hidden;
         }
-        /* SOL TARAF: Canlı Önizleme Alanı (Adobe Tarzı Gri Alan) */
         .preview-side {
             flex: 1.2;
             background-color: #f0f2f5;
@@ -134,7 +157,6 @@ if (isset($_REQUEST['action'])) {
             height: auto;
             border-radius: 8px;
         }
-        /* SAĞ TARAF: Kontrol Ve Özelleştirme Paneli */
         .control-side {
             flex: 1;
             padding: 30px;
@@ -148,7 +170,6 @@ if (isset($_REQUEST['action'])) {
             font-size: 24px;
             margin-bottom: 20px;
         }
-        /* Sekme Butonları (Bağlantı, Stil, Renk, Dosyalar) */
         .tabs-nav {
             display: flex;
             gap: 8px;
@@ -173,10 +194,8 @@ if (isset($_REQUEST['action'])) {
             font-weight: bold;
             border-color: #cbd5e1;
         }
-        /* Sekme İçerikleri */
         .tab-content {
             display: none;
-            flex: 1;
         }
         .tab-content.active {
             display: block;
@@ -191,7 +210,7 @@ if (isset($_REQUEST['action'])) {
             margin-bottom: 8px;
             font-weight: 500;
         }
-        input[type="text"], select {
+        input[type="text"], input[type="number"], select {
             width: 100%;
             padding: 12px;
             border: 2px solid #e2e8f0;
@@ -199,15 +218,15 @@ if (isset($_REQUEST['action'])) {
             box-sizing: border-box;
             font-size: 14px;
         }
-        input[type="text"]:focus, select:focus {
+        input[type="text"]:focus, input[type="number"]:focus, select:focus {
             outline: none;
             border-color: #ffb6c1;
         }
-        .color-pickers {
+        .color-pickers, .size-inputs {
             display: flex;
             gap: 15px;
         }
-        .color-box {
+        .color-box, .size-box {
             flex: 1;
         }
         input[type="color"] {
@@ -219,7 +238,6 @@ if (isset($_REQUEST['action'])) {
             background: none;
             padding: 0;
         }
-        /* Pembe & Mavi Geçişli Sihirli İndirme Butonu */
         .download-btn {
             width: 100%;
             background: linear-gradient(135deg, #ffb6c1 0%, #87ceeb 100%);
@@ -242,31 +260,26 @@ if (isset($_REQUEST['action'])) {
 <body>
 
 <div class="app-workspace">
-    <!-- SOL BÖLÜM: Canlı QR Kod Önizleme Ekranı -->
     <div class="preview-side">
         <div class="qr-card-box">
-            <!-- JavaScript buradaki resmi anlık olarak güncelleyecek -->
-            <img id="qrPreview" src="index.php?action=preview&link=https://github.com" alt="QR Kod Önizleme">
+            <img id="qrPreview" src="index.php?action=preview&link=https://github.com&qr_color=%23000000&bg_color=%23ffffff&size=300" alt="QR Kod Önizleme">
         </div>
     </div>
 
-    <!-- SAĞ BÖLÜM: Özelleştirme ve Sekme Alanı -->
     <div class="control-side">
         <h2>QR Kodu Düzenle ✨</h2>
         
-        <!-- Sekme Menüsü -->
         <div class="tabs-nav">
-            <button class="tab-btn active" onclick="switchTab('tab-link')">Bağlantı</button>
-            <button class="tab-btn" onclick="switchTab('tab-renk')">Renk</button>
-            <button class="tab-btn" onclick="switchTab('tab-boyut')">Boyut</button>
-            <button class="tab-btn" onclick="switchTab('tab-dosyalar')">Dosyalar</button>
+            <button class="tab-btn active" onclick="switchTab(event, 'tab-link')">Bağlantı</button>
+            <button class="tab-btn" onclick="switchTab(event, 'tab-renk')">Renk</button>
+            <button class="tab-btn" onclick="switchTab(event, 'tab-boyut')">Boyut</button>
+            <button class="tab-btn" onclick="switchTab(event, 'tab-dosyalar')">Dosyalar</button>
         </div>
 
-        <!-- Form Elemanları -->
-        <form id="qrForm" action="index.php" method="GET">
+        <form id="qrForm" action="index.php" method="GET" style="display: flex; flex-direction: column; flex: 1;">
             <input type="hidden" name="action" value="download">
+            <input type="hidden" id="size" name="size" value="300">
 
-            <!-- 1. SEKME: BAĞLANTI -->
             <div id="tab-link" class="tab-content active">
                 <div class="form-group">
                     <label for="link">URL girin veya bulun:</label>
@@ -275,7 +288,6 @@ if (isset($_REQUEST['action'])) {
                 </div>
             </div>
 
-            <!-- 2. SEKME: RENK -->
             <div id="tab-renk" class="tab-content">
                 <div class="color-pickers">
                     <div class="color-box">
@@ -289,39 +301,42 @@ if (isset($_REQUEST['action'])) {
                 </div>
             </div>
 
-            <!-- 3. SEKME: BOYUT -->
+            <!-- DÜZENLENEN KISIM: Select menüsü yerine yan yana iki dinamik input kutusu -->
             <div id="tab-boyut" class="tab-content">
                 <div class="form-group">
-                    <label for="size">QR Kod Çözünürlüğü (Piksel):</label>
-                    <select id="size" name="size" onchange="updatePreview()">
-                        <option value="200">200 x 200 (Küçük)</option>
-                        <option value="300" selected>300 x 300 (Standart)</option>
-                        <option value="500">500 x 500 (Yüksek Kalite)</option>
-                    </select>
+                    <label>PDF Sayfa Boyutları (Milimetre - mm):</label>
+                    <div class="size-inputs">
+                        <div class="size-box">
+                            <label for="pdf_width" style="font-size: 11px; color: #718096;">Genişlik (W):</label>
+                            <input type="number" id="pdf_width" name="pdf_width" value="200" min="50" max="500" oninput="updatePreview()">
+                        </div>
+                        <div class="size-box">
+                            <label for="pdf_height" style="font-size: 11px; color: #718096;">Yükseklik (H):</label>
+                            <input type="number" id="pdf_height" name="pdf_height" value="200" min="50" max="500" oninput="updatePreview()">
+                        </div>
+                    </div>
+                    <p style="font-size:12px; color:#a0aec0; margin-top:8px;">Girilen ölçüler sadece PDF çıktısı için geçerlidir.</p>
                 </div>
             </div>
 
-            <!-- 4. SEKME: DOSYALAR (İNDİRME FORMATI) -->
             <div id="tab-dosyalar" class="tab-content">
                 <div class="form-group">
                     <label for="format">Dosya Tipi Seçin:</label>
                     <select id="format" name="format">
                         <option value="png">PNG (Görsel Resim)</option>
                         <option value="svg">SVG (Vektörel Çizim)</option>
-                        <option value="pdf">PDF Belgesi</option>
+                        <option value="pdf" selected>PDF Belgesi</option>
                     </select>
                 </div>
             </div>
 
-            <!-- Master İndirme Butonu -->
             <button type="submit" class="download-btn">Tasarımı İndir 🚀</button>
         </form>
     </div>
 </div>
 
 <script>
-    // Sekmeler arası geçişi sağlayan fonksiyon
-    function switchTab(tabId) {
+    function switchTab(evt, tabId) {
         document.querySelectorAll('.tab-content').forEach(content => {
             content.classList.remove('active');
         });
@@ -330,17 +345,15 @@ if (isset($_REQUEST['action'])) {
         });
         
         document.getElementById(tabId).classList.add('active');
-        event.currentTarget.classList.add('active');
+        evt.currentTarget.classList.add('active');
     }
 
-    // Renk, link veya boyut değiştiğinde sol taraftaki resmi anlık güncelleyen sihirli fonksiyon
     function updatePreview() {
         const link = encodeURIComponent(document.getElementById('link').value);
         const qrColor = encodeURIComponent(document.getElementById('qr_color').value);
         const bgColor = encodeURIComponent(document.getElementById('bg_color').value);
         const size = document.getElementById('size').value;
 
-        // Resmi arkadaki PHP API önizleme moduna bağlayıp cache sorununu çözmek için zaman ekliyoruz
         const newSrc = `index.php?action=preview&link=${link}&qr_color=${qrColor}&bg_color=${bgColor}&size=${size}&t=${new Date().getTime()}`;
         document.getElementById('qrPreview').src = newSrc;
     }
